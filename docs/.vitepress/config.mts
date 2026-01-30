@@ -11,7 +11,7 @@ export default defineConfig({
     
     nav: [
       { text: 'Главная', link: '/' },
-      { text: 'Начать обучение', link: '/chapters/part-0/chapter-0-1' },
+      { text: 'Начать обучение', link: '/php-laravel-book/chapters/part-0/chapter-0-1' },
       { text: 'GitHub', link: 'https://github.com/jel11/php-laravel-book' }
     ],
 
