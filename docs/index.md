@@ -97,7 +97,7 @@ Git, Docker, деплой, CI/CD
 ---
 
 <div style="text-align: center; margin-top: 3rem;">
-  <a href="/chapters/part-0/chapter-0-1" class="vp-button vp-button-brand">Начать обучение →</a>
+  <a href="/php-laravel-book/chapters/part-0/chapter-0-1" class="vp-button vp-button-brand">Начать обучение →</a>
 </div>
 
 <style>

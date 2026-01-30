@@ -8,7 +8,7 @@ export default defineConfig({
   
   themeConfig: {
     logo: '/logo.svg',
-    
+
     nav: [
       { text: 'Главная', link: '/' },
       { text: 'Начать обучение', link: '/php-laravel-book/chapters/part-0/chapter-0-1' },
@@ -257,7 +257,7 @@ export default defineConfig({
   },
 
   head: [
-    ['link', { rel: 'icon', href: '/favicon.ico' }],
+    ['link', { rel: 'icon', href: '/php-laravel-vitepress/docs/public/favicon.ico' }],
     ['meta', { name: 'theme-color', content: '#3eaf7c' }],
     ['meta', { name: 'og:type', content: 'website' }],
     ['meta', { name: 'og:locale', content: 'ru' }],
