@@ -192,7 +192,7 @@ export default defineConfig({
     ],
 
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/your-username/php-laravel-book' }
+      { icon: 'github', link: 'https://github.com/jel11/php-laravel-book' }
     ],
 
     footer: {
