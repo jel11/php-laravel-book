@@ -235,7 +235,7 @@ export default defineConfig({
     returnToTopLabel: 'Наверх',
     
     editLink: {
-      pattern: 'https://github.com/your-username/php-laravel-book/edit/main/docs/:path',
+      pattern: 'https://github.com/jel11/php-laravel-book/edit/main/docs/:path',
       text: 'Редактировать эту страницу на GitHub'
     },
 

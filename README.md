@@ -8,7 +8,7 @@
 
 **Полное руководство по PHP и Laravel с практическими примерами**
 
-[📖 Читать онлайн](https://your-site.com) • [🚀 Начать обучение](#быстрый-старт) • [💬 Обсудить](https://github.com/your-username/php-laravel-book/discussions)
+[📖 Читать онлайн](https://jel11.github.io/php-laravel-book/) • [🚀 Начать обучение](#быстрый-старт) • [💬 Обсудить](https://github.com/jel11/php-laravel-book/discussions)
 
 </div>
 
@@ -52,7 +52,7 @@
 
 ```bash
 # Клонируй репозиторий
-git clone https://github.com/your-username/php-laravel-book.git
+git clone https://github.com/jel11/php-laravel-book
 cd php-laravel-book
 
 # Установи зависимости
@@ -126,6 +126,6 @@ MIT License — свободно используй и модифицируй.
 
 **Готов начать обучение?**
 
-[📖 Открыть учебник](https://jel11.php-laravel-book.github.io) • [🚀 Глава 0.1](docs/chapters/part-0/chapter-0-1.md)
+[📖 Открыть учебник](https://jel11.github.io/php-laravel-book/) • [🚀 Глава 0.1](docs/chapters/part-0/chapter-0-1.md)
 
 </div>
