@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# VitePress
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+.temp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+npm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Temporary files
+*.tmp
+.claude-chapters/
