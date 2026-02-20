@@ -5,13 +5,13 @@ export default defineConfig({
   title: 'PHP & Laravel',
   description: 'От нуля до мессенджера - Полное руководство',
   lang: 'ru-RU',
-  
+
   themeConfig: {
     logo: '/logo.svg',
 
     nav: [
       { text: 'Главная', link: '/' },
-      { text: 'Начать обучение', link: '/php-laravel-book/chapters/part-0/chapter-0-1' },
+      { text: 'Начать обучение', link: '/chapters/part-0/chapter-0-1' },
       { text: 'GitHub', link: 'https://github.com/jel11/php-laravel-book' }
     ],
 
@@ -233,7 +233,7 @@ export default defineConfig({
     darkModeSwitchLabel: 'Тема',
     sidebarMenuLabel: 'Меню',
     returnToTopLabel: 'Наверх',
-    
+
     editLink: {
       pattern: 'https://github.com/jel11/php-laravel-book/edit/main/docs/:path',
       text: 'Редактировать эту страницу на GitHub'
@@ -263,5 +263,5 @@ export default defineConfig({
     ['meta', { name: 'og:locale', content: 'ru' }],
     ['meta', { name: 'og:site_name', content: 'PHP & Laravel: От нуля до мессенджера' }]
   ],
-   ignoreDeadLinks: true
+  ignoreDeadLinks: true
 })
