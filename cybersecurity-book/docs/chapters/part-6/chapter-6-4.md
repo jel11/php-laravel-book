@@ -2,48 +2,81 @@
 
 ## 🎯 Цели главы
 
-- Понять форматы логов Apache/Nginx и научиться извлекать из них сигналы угроз
-- Разобрать ключевые Windows Event ID и их значение для SOC-аналитика
-- Научиться читать firewall-логи (Cisco ASA, iptables, pf) и выявлять сканирование портов
-- Писать SPL-запросы Splunk и KQL-запросы Elasticsearch для каждого типа лога
-- Строить корреляционные правила, связывающие несколько источников логов
-- Пройти практический сценарий обнаружения SQL injection через Apache-логи
+- Освоить форматы логов Apache/Nginx, Windows Event Log и Firewall-логов
+- Научиться вручную и автоматически выявлять аномалии: брутфорс, сканирование, инъекции
+- Понять принципы корреляции событий из разных источников
+- Составлять поисковые запросы в Splunk и ELK Stack
+- Строить детекционные правила на основе паттернов реальных атак
 
 ---
 
-## 1. 📋 Apache/Nginx Access Logs — Combined Log Format
+## 6.4.1 Почему лог-анализ — основа работы SOC
 
-### 1.1 Формат Combined Log Format
+Логи — это цифровые следы всех действий в инфраструктуре. Без их анализа невозможно:
+- обнаружить вторжение
+- установить хронологию атаки
+- собрать доказательную базу
 
-Apache и Nginx по умолчанию пишут логи в **Combined Log Format** — расширение Common Log Format (CLF). Это стандарт де-факто для веб-серверов.
-
-```
-LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\"" combined
-```
-
-Пример строки:
+По статистике Verizon DBIR, более **70% инцидентов** можно было выявить по имеющимся логам — но никто их не читал.
 
 ```
-192.168.1.105 - admin [25/Feb/2026:14:32:01 +0300] "GET /admin/users?id=1' OR '1'='1 HTTP/1.1" 200 4823 "https://example.com/login" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) sqlmap/1.7.8"
+ Источники логов в типичной организации
+ ═══════════════════════════════════════
+
+ ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+ │  Web-сервер │   │  Windows DC │   │   Firewall  │
+ │ Apache/Nginx│   │  Event Logs │   │ iptables/ASA│
+ └──────┬──────┘   └──────┬──────┘   └──────┬──────┘
+        │                 │                 │
+        └────────┬────────┘                 │
+                 │         ┌────────────────┘
+                 ▼         ▼
+           ┌─────────────────┐
+           │   SIEM / ELK    │
+           │  (Splunk, etc.) │
+           └────────┬────────┘
+                    │
+                    ▼
+           ┌─────────────────┐
+           │   SOC Analyst   │
+           │   (L1 / L2)     │
+           └─────────────────┘
 ```
 
-### 1.2 Разбор полей
+---
 
-| Поле | Пример | Описание |
-|------|--------|----------|
-| `%h` | `192.168.1.105` | IP-адрес клиента (или прокси) |
-| `%l` | `-` | Ident клиента (почти всегда `-`) |
-| `%u` | `admin` | Аутентифицированный пользователь (или `-`) |
-| `%t` | `[25/Feb/2026:14:32:01 +0300]` | Время запроса |
-| `%r` | `GET /admin/users?id=1 HTTP/1.1` | Строка запроса |
-| `%>s` | `200` | HTTP-код ответа |
-| `%b` | `4823` | Размер ответа в байтах |
-| `%{Referer}i` | `https://example.com/login` | Заголовок Referer |
-| `%{User-Agent}i` | `Mozilla/5.0 ... sqlmap/1.7.8` | Заголовок User-Agent |
+## 6.4.2 Apache и Nginx: форматы access-логов
 
-### 1.3 Nginx log_format
+### Combined Log Format (Apache по умолчанию)
 
-Nginx использует схожий формат, но с другим синтаксисом:
+```
+%h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"
+```
+
+| Поле | Обозначение | Пример |
+|------|-------------|--------|
+| `%h` | IP клиента | `192.168.1.105` |
+| `%l` | Ident (обычно `-`) | `-` |
+| `%u` | Авторизованный юзер | `admin` или `-` |
+| `%t` | Время запроса | `[25/Feb/2026:14:32:01 +0300]` |
+| `%r` | Строка запроса | `GET /index.php HTTP/1.1` |
+| `%>s` | HTTP-статус | `200`, `403`, `404` |
+| `%b` | Размер ответа (байт) | `2048` |
+| `Referer` | Откуда пришёл | `https://google.com` |
+| `User-Agent` | Браузер/инструмент | `Mozilla/5.0 ...` |
+
+### Пример строки лога
+
+```
+203.0.113.42 - - [25/Feb/2026:14:32:01 +0300] "GET /admin/login.php HTTP/1.1" 200 4823 "-" "sqlmap/1.7.2#stable (https://sqlmap.org)"
+```
+
+Что сразу бросается в глаза:
+- User-Agent: `sqlmap` — инструмент SQL-инъекций
+- Путь: `/admin/login.php` — административный раздел
+- Статус: `200` — запрос успешен
+
+### Nginx access_log формат
 
 ```nginx
 log_format main '$remote_addr - $remote_user [$time_local] "$request" '
@@ -51,1010 +84,1035 @@ log_format main '$remote_addr - $remote_user [$time_local] "$request" '
                 '"$http_user_agent" "$http_x_forwarded_for"';
 ```
 
-Важно: поле `$http_x_forwarded_for` показывает реальный IP клиента за прокси/балансировщиком нагрузки. Атакующий может подделать этот заголовок.
+Дополнительные поля Nginx:
 
-### 1.4 Apache Error Log
-
-Формат error-лога отличается:
-
+```nginx
+log_format detailed '$remote_addr - $remote_user [$time_local] '
+                    '"$request" $status $bytes_sent '
+                    '"$http_referer" "$http_user_agent" '
+                    '$request_time $upstream_response_time '
+                    '$pipe $connection_requests';
 ```
-[Wed Feb 25 14:32:05.123456 2026] [error] [pid 12345] [client 192.168.1.105:49512] File does not exist: /var/www/html/etc/passwd, referer: http://example.com/
-```
 
-Поля:
-- Время в формате `[Day Mon DD HH:MM:SS.usec YYYY]`
-- Уровень: `debug`, `info`, `notice`, `warn`, `error`, `crit`, `alert`, `emerg`
-- PID процесса
-- IP и порт клиента
-- Сообщение об ошибке
+| Поле | Описание |
+|------|----------|
+| `$request_time` | Время обработки запроса (сек) |
+| `$upstream_response_time` | Время ответа бэкенда |
+| `$http_x_forwarded_for` | Реальный IP за прокси |
 
 ---
 
-## 2. 🔍 Анализ Apache-логов — Поиск Аномалий
+## 6.4.3 Apache Error Log
 
-### 2.1 Топ IP-адресов по количеству запросов
+Формат error.log:
 
-**Bash:**
-```bash
-# Топ-20 IP по запросам
-awk '{print $1}' /var/log/apache2/access.log | sort | uniq -c | sort -rn | head -20
-
-# Фильтр по коду ответа 404
-awk '$9 == 404 {print $1}' /var/log/apache2/access.log | sort | uniq -c | sort -rn | head -10
-
-# IP с более 1000 запросов за последний час
-awk -v date="$(date -d '1 hour ago' +'%d/%b/%Y:%H')" '$4 ~ date {print $1}' /var/log/apache2/access.log | sort | uniq -c | sort -rn | awk '$1 > 1000'
+```
+[Wed Feb 25 14:32:01.123456 2026] [error] [pid 1234] [client 203.0.113.42:54321] \
+File does not exist: /var/www/html/wp-admin/admin-ajax.php
 ```
 
-**Python-скрипт для парсинга:**
+Структура:
+```
+[timestamp] [уровень] [pid] [client ip:port] сообщение
+```
+
+### Уровни severity в Apache
+
+| Уровень | Значение |
+|---------|----------|
+| `emerg` | Система неработоспособна |
+| `alert` | Требует немедленного вмешательства |
+| `crit` | Критическое состояние |
+| `error` | Ошибки (404, PHP Fatal) |
+| `warn` | Предупреждения |
+| `notice` | Нормальные значимые события |
+| `info` | Информационные сообщения |
+| `debug` | Отладочная информация |
+
+### Характерные паттерны в error.log
+
+```bash
+# Попытки path traversal
+[error] ... "GET /../../../../etc/passwd HTTP/1.1" ...
+
+# PHP inclusion атаки
+[error] ... Failed opening required '/var/www/html/http://evil.com/shell.txt'
+
+# Превышение лимитов
+[error] ... client denied by server configuration: /var/www/html/admin
+```
+
+---
+
+## 6.4.4 Поиск аномалий в веб-логах
+
+### Паттерн 1: Брутфорс аутентификации
+
+```bash
+# Пример: 500 запросов к /login за 1 минуту с одного IP
+203.0.113.42 - - [25/Feb/2026:14:00:01] "POST /login HTTP/1.1" 401 234
+203.0.113.42 - - [25/Feb/2026:14:00:02] "POST /login HTTP/1.1" 401 234
+203.0.113.42 - - [25/Feb/2026:14:00:03] "POST /login HTTP/1.1" 401 234
+...
+203.0.113.42 - - [25/Feb/2026:14:00:58] "POST /login HTTP/1.1" 200 1823
+```
+
+Признаки брутфорса:
+- Множество `401` / `403` с одного IP
+- POST на `/login`, `/wp-login.php`, `/admin`
+- Потом `200` — успешный вход
+
+### Паттерн 2: Сканирование (reconnaissance)
+
+```
+# nikto / nmap HTTP scan
+203.0.113.55 - - [25/Feb/2026:09:12:01] "GET /robots.txt HTTP/1.1" 200 67
+203.0.113.55 - - [25/Feb/2026:09:12:01] "GET /.git/HEAD HTTP/1.1" 404 196
+203.0.113.55 - - [25/Feb/2026:09:12:01] "GET /wp-login.php HTTP/1.1" 404 196
+203.0.113.55 - - [25/Feb/2026:09:12:01] "GET /phpmyadmin/ HTTP/1.1" 404 196
+203.0.113.55 - - [25/Feb/2026:09:12:02] "GET /admin/ HTTP/1.1" 403 289
+203.0.113.55 - - [25/Feb/2026:09:12:02] "GET /.env HTTP/1.1" 404 196
+203.0.113.55 - - [25/Feb/2026:09:12:02] "GET /backup.zip HTTP/1.1" 404 196
+```
+
+Признаки сканирования:
+- Много `404` за короткое время
+- Характерные пути (`.env`, `.git`, `backup`)
+- User-Agent: `Nikto`, `Nmap Scripting Engine`, `DirBuster`
+
+### Паттерн 3: SQL-инъекции в URL
+
+```
+# Примеры SQL-инъекций в access.log
+GET /products.php?id=1'+OR+'1'%3D'1 HTTP/1.1
+GET /search?q=1+UNION+SELECT+NULL,NULL,NULL-- HTTP/1.1
+GET /user?id=1;DROP+TABLE+users-- HTTP/1.1
+GET /page?id=1+AND+SLEEP(5)-- HTTP/1.1
+GET /item?id=1'+AND+EXTRACTVALUE(1,CONCAT(0x7e,version()))-- HTTP/1.1
+```
+
+### Скрипт анализа access.log на Python
+
 ```python
+#!/usr/bin/env python3
+"""
+Анализатор аномалий в Apache/Nginx access.log
+"""
+
 import re
-from collections import Counter
+import sys
+from collections import defaultdict
 from datetime import datetime
+
+# Паттерны SQL-инъекций
+SQL_PATTERNS = [
+    r"union\s+select",
+    r"or\s+1\s*=\s*1",
+    r"drop\s+table",
+    r"sleep\s*\(",
+    r"extractvalue",
+    r"benchmark\s*\(",
+    r"information_schema",
+    r"xp_cmdshell",
+    r"waitfor\s+delay",
+    r"--\s*$",
+    r"'\s+or\s+'",
+]
+
+# Паттерны сканирования
+SCAN_PATHS = [
+    r"\.env$", r"\.git/", r"wp-login\.php", r"phpmyadmin",
+    r"\.htaccess", r"backup\.(zip|tar|gz|sql)",
+    r"/etc/passwd", r"/proc/self", r"\.bash_history",
+]
+
+# User-Agent сканеров
+SCANNER_UA = [
+    "sqlmap", "nikto", "nmap", "masscan", "zgrab",
+    "dirbuster", "gobuster", "wfuzz", "burpsuite",
+    "havij", "acunetix", "nessus", "openvas",
+]
 
 LOG_PATTERN = re.compile(
     r'(?P<ip>\S+) \S+ (?P<user>\S+) \[(?P<time>[^\]]+)\] '
-    r'"(?P<method>\S+) (?P<uri>\S+) (?P<proto>[^"]+)" '
-    r'(?P<status>\d{3}) (?P<size>\S+) '
+    r'"(?P<method>\S+) (?P<path>\S+) \S+" '
+    r'(?P<status>\d+) (?P<size>\S+) '
     r'"(?P<referer>[^"]*)" "(?P<ua>[^"]*)"'
 )
 
-def parse_access_log(filepath):
-    records = []
-    with open(filepath, 'r', errors='replace') as f:
-        for line in f:
-            m = LOG_PATTERN.match(line)
-            if m:
-                records.append(m.groupdict())
-    return records
+def parse_log_line(line):
+    m = LOG_PATTERN.match(line.strip())
+    if not m:
+        return None
+    return m.groupdict()
 
-def top_ips(records, n=20):
-    counter = Counter(r['ip'] for r in records)
-    return counter.most_common(n)
+def analyze_log(filepath):
+    ip_stats = defaultdict(lambda: {
+        "requests": 0, "errors": 0, "post_count": 0,
+        "paths": [], "statuses": defaultdict(int)
+    })
+    alerts = []
 
-def top_uris(records, n=20):
-    counter = Counter(r['uri'] for r in records)
-    return counter.most_common(n)
+    with open(filepath, "r", errors="replace") as f:
+        for lineno, line in enumerate(f, 1):
+            entry = parse_log_line(line)
+            if not entry:
+                continue
 
-def status_distribution(records):
-    counter = Counter(r['status'] for r in records)
-    return sorted(counter.items())
+            ip = entry["ip"]
+            stats = ip_stats[ip]
+            stats["requests"] += 1
+            stats["statuses"][entry["status"]] += 1
 
-if __name__ == '__main__':
-    records = parse_access_log('/var/log/apache2/access.log')
-    print("=== ТОП IP ===")
-    for ip, count in top_ips(records):
-        print(f"  {count:8d}  {ip}")
-    print("\n=== КОДЫ ОТВЕТА ===")
-    for status, count in status_distribution(records):
-        print(f"  HTTP {status}: {count}")
-```
+            if entry["status"].startswith(("4", "5")):
+                stats["errors"] += 1
 
-### 2.2 Обнаружение подозрительных User-Agent
+            if entry["method"] == "POST":
+                stats["post_count"] += 1
 
-```python
-SUSPICIOUS_UA_PATTERNS = [
-    # Инструменты сканирования
-    r'sqlmap',
-    r'nikto',
-    r'nmap',
-    r'masscan',
-    r'zgrab',
-    r'dirbuster',
-    r'gobuster',
-    r'wfuzz',
-    r'burpsuite',
-    r'hydra',
-    # Устаревшие браузеры (часто ботнеты)
-    r'MSIE [1-6]\.',
-    # Пустой UA
-    r'^-$',
-    r'^$',
-    # Сканеры уязвимостей
-    r'acunetix',
-    r'nessus',
-    r'openvas',
-    r'qualys',
-    # Python/curl без маскировки
-    r'^python-requests',
-    r'^curl/[0-9]',
-    r'^Go-http-client',
-    r'^Java/',
-    r'^libwww-perl',
-]
+            # Проверка User-Agent на сканеры
+            ua_lower = entry["ua"].lower()
+            for scanner in SCANNER_UA:
+                if scanner in ua_lower:
+                    alerts.append({
+                        "line": lineno,
+                        "type": "SCANNER_UA",
+                        "severity": "HIGH",
+                        "ip": ip,
+                        "detail": f"Scanner UA detected: {scanner}",
+                        "raw": line.strip()
+                    })
+                    break
 
-import re
+            # Проверка SQL-инъекций
+            path_decoded = entry["path"].lower().replace("%20", " ").replace("+", " ")
+            for pattern in SQL_PATTERNS:
+                if re.search(pattern, path_decoded, re.IGNORECASE):
+                    alerts.append({
+                        "line": lineno,
+                        "type": "SQL_INJECTION",
+                        "severity": "CRITICAL",
+                        "ip": ip,
+                        "detail": f"SQL injection pattern: {pattern}",
+                        "raw": line.strip()
+                    })
+                    break
 
-def find_suspicious_ua(records):
-    patterns = [re.compile(p, re.IGNORECASE) for p in SUSPICIOUS_UA_PATTERNS]
-    suspicious = []
-    for r in records:
-        ua = r.get('ua', '')
-        for pat in patterns:
-            if pat.search(ua):
-                suspicious.append({
-                    'ip': r['ip'],
-                    'time': r['time'],
-                    'uri': r['uri'],
-                    'ua': ua,
-                    'pattern': pat.pattern
-                })
-                break
-    return suspicious
-```
+            # Проверка сканирования путей
+            for scan_path in SCAN_PATHS:
+                if re.search(scan_path, entry["path"], re.IGNORECASE):
+                    alerts.append({
+                        "line": lineno,
+                        "type": "PATH_SCAN",
+                        "severity": "MEDIUM",
+                        "ip": ip,
+                        "detail": f"Suspicious path: {entry['path']}",
+                        "raw": line.strip()
+                    })
+                    break
 
-### 2.3 Обнаружение Path Traversal
+    # Анализ на брутфорс (много 401/403 с одного IP)
+    for ip, stats in ip_stats.items():
+        auth_failures = stats["statuses"].get("401", 0) + stats["statuses"].get("403", 0)
+        if auth_failures > 50:
+            alerts.append({
+                "line": 0,
+                "type": "BRUTE_FORCE",
+                "severity": "HIGH",
+                "ip": ip,
+                "detail": f"Auth failures: {auth_failures} (401: {stats['statuses'].get('401',0)}, 403: {stats['statuses'].get('403',0)})",
+                "raw": f"Aggregate for IP {ip}"
+            })
 
-```python
-PATH_TRAVERSAL_PATTERNS = [
-    r'\.\./\.\.',
-    r'\.\.%2[Ff]',       # ../  URL-encoded
-    r'%2[Ee]%2[Ee]',     # ..   double encoded
-    r'\.\.%5[Cc]',       # ..\  Windows-style
-    r'/etc/passwd',
-    r'/etc/shadow',
-    r'/proc/self',
-    r'C:\\\\Windows',
-    r'%00',              # Null byte
-    r'\.\./etc',
-    r'boot\.ini',
-    r'win\.ini',
-]
+        # Много 404 = сканирование
+        not_found = stats["statuses"].get("404", 0)
+        if not_found > 100:
+            alerts.append({
+                "line": 0,
+                "type": "DIRECTORY_SCAN",
+                "severity": "MEDIUM",
+                "ip": ip,
+                "detail": f"404 count: {not_found}",
+                "raw": f"Aggregate for IP {ip}"
+            })
 
-def find_path_traversal(records):
-    patterns = [re.compile(p, re.IGNORECASE) for p in PATH_TRAVERSAL_PATTERNS]
-    hits = []
-    for r in records:
-        uri = r.get('uri', '')
-        for pat in patterns:
-            if pat.search(uri):
-                hits.append({
-                    'ip': r['ip'],
-                    'time': r['time'],
-                    'uri': uri,
-                    'status': r['status'],
-                    'match': pat.pattern
-                })
-                break
-    return hits
-```
+    return alerts, ip_stats
 
-### 2.4 Обнаружение SQL Injection в URI
+def print_report(alerts, ip_stats):
+    print("\n" + "="*60)
+    print("  ОТЧЁТ АНАЛИЗА ACCESS.LOG")
+    print("="*60)
 
-```python
-SQLI_PATTERNS = [
-    r"'\s*(OR|AND)\s*'?\d",           # ' OR '1'='1
-    r"UNION\s+SELECT",
-    r"SELECT\s+.*\s+FROM",
-    r"INSERT\s+INTO",
-    r"DROP\s+TABLE",
-    r"--\s*$",                          # SQL comment at end
-    r";.*DROP",
-    r"xp_cmdshell",
-    r"EXEC\s*\(",
-    r"CAST\s*\(",
-    r"CONVERT\s*\(",
-    r"CHAR\s*\(\d+\)",
-    r"0x[0-9a-fA-F]{4,}",              # Hex encoding
-    r"INFORMATION_SCHEMA",
-    r"sys\.tables",
-    r"waitfor\s+delay",                 # Time-based blind SQLi
-    r"SLEEP\s*\(",
-    r"BENCHMARK\s*\(",
-]
+    # Статистика по IP
+    print(f"\n[*] Топ-10 активных IP:")
+    sorted_ips = sorted(ip_stats.items(), key=lambda x: x[1]["requests"], reverse=True)[:10]
+    for ip, stats in sorted_ips:
+        print(f"    {ip:20s} запросов: {stats['requests']:5d}  ошибок: {stats['errors']:4d}")
 
-def find_sqli(records):
-    patterns = [re.compile(p, re.IGNORECASE) for p in SQLI_PATTERNS]
-    from urllib.parse import unquote
-    hits = []
-    for r in records:
-        uri = unquote(r.get('uri', ''))
-        for pat in patterns:
-            if pat.search(uri):
-                hits.append(r | {'sqli_pattern': pat.pattern, 'decoded_uri': uri})
-                break
-    return hits
+    # Алерты по severity
+    critical = [a for a in alerts if a["severity"] == "CRITICAL"]
+    high = [a for a in alerts if a["severity"] == "HIGH"]
+    medium = [a for a in alerts if a["severity"] == "MEDIUM"]
+
+    print(f"\n[!] Алерты: CRITICAL={len(critical)}, HIGH={len(high)}, MEDIUM={len(medium)}")
+
+    for sev, color_code, alert_list in [
+        ("CRITICAL", "\033[91m", critical),
+        ("HIGH", "\033[93m", high),
+        ("MEDIUM", "\033[94m", medium),
+    ]:
+        if alert_list:
+            print(f"\n{color_code}[{sev}]\033[0m")
+            for a in alert_list[:5]:  # первые 5
+                print(f"  Строка {a['line']:5d} | IP: {a['ip']:20s} | {a['type']}")
+                print(f"  Детали: {a['detail']}")
+                print(f"  Лог: {a['raw'][:100]}...")
+                print()
+
+if __name__ == "__main__":
+    logfile = sys.argv[1] if len(sys.argv) > 1 else "/var/log/apache2/access.log"
+    alerts, ip_stats = analyze_log(logfile)
+    print_report(alerts, ip_stats)
 ```
 
 ---
 
-## 3. 🪟 Windows Security Event Log
+## 6.4.5 Windows Event Log: структура и ключевые события
 
-### 3.1 Архитектура Windows Event Log
-
-Windows Event Log хранится в файлах `.evtx` и разделён на несколько каналов:
-
-```
-Event Log Channels:
-├── Security          ← Главный для SOC (аудит входов, изменений)
-├── System            ← Системные события
-├── Application       ← Прикладные программы
-├── Microsoft-Windows-Sysmon/Operational  ← Sysmon (расширенный аудит)
-├── Microsoft-Windows-PowerShell/Operational
-└── Microsoft-Windows-TaskScheduler/Operational
-```
-
-### 3.2 Ключевые Event ID для SOC-аналитика
-
-| Event ID | Описание | Значимость |
-|----------|----------|------------|
-| **4624** | Успешный вход в систему | Средняя — норма |
-| **4625** | Неудачный вход | Высокая при множестве |
-| **4634** | Выход из системы | Низкая |
-| **4648** | Вход с явными учётными данными | Высокая |
-| **4672** | Вход с привилегиями (Admin) | Высокая |
-| **4688** | Создание нового процесса | Высокая (с Sysmon) |
-| **4689** | Завершение процесса | Низкая |
-| **4698** | Создание запланированной задачи | Критическая |
-| **4702** | Обновление запланированной задачи | Высокая |
-| **4720** | Создание учётной записи | Критическая |
-| **4722** | Включение учётной записи | Высокая |
-| **4723** | Смена пароля своей учётки | Средняя |
-| **4724** | Сброс пароля другой учётки | Высокая |
-| **4728** | Добавление в глобальную группу | Критическая |
-| **4732** | Добавление в локальную группу | Высокая |
-| **4738** | Изменение учётной записи | Высокая |
-| **4740** | Блокировка учётной записи | Высокая |
-| **4756** | Добавление в универсальную группу | Высокая |
-| **4776** | Проверка NTLM-учётных данных | Высокая |
-| **4768** | Запрос TGT Kerberos | Средняя |
-| **4769** | Запрос TGS Kerberos | Средняя |
-| **4771** | Неудача преаутентификации Kerberos | Высокая |
-| **4946** | Изменение правила Windows Firewall | Высокая |
-| **5145** | Доступ к сетевым ресурсам | Средняя |
-
-### 3.3 Разбор Event ID 4625 — Неудачный вход
-
-Пример XML из Security.evtx:
+### Формат Windows Event Log
 
 ```xml
 <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
   <System>
-    <EventID>4625</EventID>
-    <TimeCreated SystemTime="2026-02-25T11:15:32.123456789Z"/>
-    <Computer>WORKSTATION-01.corp.local</Computer>
+    <Provider Name="Microsoft-Windows-Security-Auditing" Guid="{...}"/>
+    <EventID>4624</EventID>
+    <Version>2</Version>
+    <Level>0</Level>
+    <Task>12544</Task>
+    <Opcode>0</Opcode>
+    <Keywords>0x8020000000000000</Keywords>
+    <TimeCreated SystemTime="2026-02-25T11:32:01.123456700Z"/>
+    <EventRecordID>1234567</EventRecordID>
+    <Channel>Security</Channel>
+    <Computer>DC01.corp.local</Computer>
   </System>
   <EventData>
-    <Data Name="SubjectUserName">-</Data>
-    <Data Name="SubjectDomainName">-</Data>
-    <Data Name="TargetUserName">administrator</Data>
-    <Data Name="TargetDomainName">CORP</Data>
-    <Data Name="Status">0xC000006D</Data>       <!-- Неверное имя/пароль -->
-    <Data Name="FailureReason">%%2313</Data>
-    <Data Name="SubStatus">0xC000006A</Data>    <!-- Неверный пароль -->
-    <Data Name="LogonType">3</Data>             <!-- Сетевой вход -->
-    <Data Name="IpAddress">10.0.0.55</Data>
-    <Data Name="IpPort">49203</Data>
-    <Data Name="WorkstationName">ATTACKER-PC</Data>
+    <Data Name="SubjectUserName">SYSTEM</Data>
+    <Data Name="TargetUserName">john.doe</Data>
+    <Data Name="LogonType">3</Data>
+    <Data Name="IpAddress">192.168.1.105</Data>
+    <Data Name="IpPort">54321</Data>
   </EventData>
 </Event>
 ```
 
-**Коды статуса 4625:**
+### Критически важные Event ID для SOC
 
-| Status | SubStatus | Значение |
-|--------|-----------|----------|
-| `0xC000006D` | `0xC000006A` | Неверный пароль |
-| `0xC000006D` | `0xC0000064` | Несуществующий пользователь |
-| `0xC000006E` | `0xC0000070` | Ограничение учётной записи |
-| `0xC0000234` | — | Учётная запись заблокирована |
-| `0xC000006F` | — | Вне разрешённых часов |
-| `0xC0000193` | — | Истёк срок учётной записи |
+#### Security Log
 
-**Типы входа (LogonType):**
+| Event ID | Описание | Важность |
+|----------|----------|----------|
+| 4624 | Успешный вход | MEDIUM |
+| 4625 | Неудачный вход | HIGH |
+| 4634 | Выход из системы | LOW |
+| 4648 | Вход с явными учётными данными (runas) | HIGH |
+| 4672 | Вход с привилегиями администратора | HIGH |
+| 4688 | Создание нового процесса | HIGH |
+| 4697 | Установка нового сервиса | CRITICAL |
+| 4698 | Создание scheduled task | HIGH |
+| 4720 | Создание учётной записи | HIGH |
+| 4722 | Включение учётной записи | MEDIUM |
+| 4723 | Смена пароля (пользователем) | MEDIUM |
+| 4724 | Сброс пароля (администратором) | HIGH |
+| 4728 | Добавление в группу безопасности | HIGH |
+| 4732 | Добавление в локальные администраторы | CRITICAL |
+| 4756 | Добавление в универсальную группу | HIGH |
+| 4768 | Kerberos TGT запрошен | MEDIUM |
+| 4769 | Kerberos service ticket запрошен | MEDIUM |
+| 4771 | Kerberos pre-auth failure | HIGH |
+| 4776 | NTLM аутентификация | MEDIUM |
+| 4798 | Перечисление локальных групп пользователя | HIGH |
+| 4799 | Перечисление членов группы | HIGH |
+| 7045 | Новый сервис установлен в системе | CRITICAL |
 
-| Тип | Название | Описание |
-|-----|----------|----------|
-| 2 | Interactive | Локальный вход (клавиатура) |
-| 3 | Network | SMB, WMI, net use |
-| 4 | Batch | Запланированные задачи |
-| 5 | Service | Службы Windows |
-| 7 | Unlock | Разблокировка экрана |
-| 8 | NetworkCleartext | Basic auth (пароль в открытом виде) |
-| 9 | NewCredentials | runas /netonly |
-| 10 | RemoteInteractive | RDP |
-| 11 | CachedInteractive | Вход по кэшированным данным |
+#### System Log
 
-### 3.4 Разбор Event ID 4688 — Создание процесса
+| Event ID | Описание |
+|----------|----------|
+| 7034 | Сервис завершился неожиданно |
+| 7036 | Сервис изменил состояние |
+| 7040 | Тип запуска сервиса изменён |
+| 104 | Журнал событий очищен (!) |
+| 1102 | Audit log очищен (!) |
 
-```xml
-<EventData>
-  <Data Name="SubjectUserName">john.doe</Data>
-  <Data Name="SubjectDomainName">CORP</Data>
-  <Data Name="NewProcessId">0x1a4c</Data>
-  <Data Name="NewProcessName">C:\Windows\System32\cmd.exe</Data>
-  <Data Name="ParentProcessName">C:\Windows\System32\svchost.exe</Data>
-  <Data Name="CommandLine">cmd.exe /c powershell -enc JABj...</Data>
-  <Data Name="TokenElevationType">%%1937</Data>  <!-- Full token (UAC elevated) -->
-</EventData>
+### Logon Types — расшифровка
+
+| Тип | Описание | Подозрительность |
+|-----|----------|-----------------|
+| 2 | Интерактивный (физический) | Норма |
+| 3 | Network (SMB, RPC) | Требует внимания |
+| 4 | Batch (scheduled task) | Норма |
+| 5 | Service logon | Норма |
+| 7 | Unlock workstation | Норма |
+| 8 | NetworkCleartext (IIS basic auth) | Высокая |
+| 9 | NewCredentials (runas /netonly) | Высокая |
+| 10 | RemoteInteractive (RDP) | Высокая |
+| 11 | CachedInteractive (offline login) | Средняя |
+
+---
+
+## 6.4.6 Анализ Windows-логов: PowerShell примеры
+
+### Получение событий через PowerShell
+
+```powershell
+# Все неудачные входы за последние 24 часа
+$StartTime = (Get-Date).AddHours(-24)
+Get-WinEvent -FilterHashtable @{
+    LogName = 'Security'
+    Id = 4625
+    StartTime = $StartTime
+} | Select-Object TimeCreated, Id, Message | Format-List
+
+# Брутфорс: группировка по IP
+Get-WinEvent -FilterHashtable @{
+    LogName = 'Security'
+    Id = 4625
+    StartTime = $StartTime
+} | ForEach-Object {
+    $xml = [xml]$_.ToXml()
+    $ip = ($xml.Event.EventData.Data | Where-Object { $_.Name -eq 'IpAddress' }).'#text'
+    $user = ($xml.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetUserName' }).'#text'
+    [PSCustomObject]@{
+        Time = $_.TimeCreated
+        IP = $ip
+        User = $user
+    }
+} | Group-Object IP | Sort-Object Count -Descending | Select-Object -First 10 |
+    Format-Table Name, Count -AutoSize
+
+# Создание новых учётных записей
+Get-WinEvent -FilterHashtable @{
+    LogName = 'Security'
+    Id = 4720
+    StartTime = $StartTime
+} | ForEach-Object {
+    $xml = [xml]$_.ToXml()
+    [PSCustomObject]@{
+        Time = $_.TimeCreated
+        NewUser = ($xml.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetUserName' }).'#text'
+        CreatedBy = ($xml.Event.EventData.Data | Where-Object { $_.Name -eq 'SubjectUserName' }).'#text'
+    }
+} | Format-Table -AutoSize
+
+# Очистка журналов (критично!)
+Get-WinEvent -FilterHashtable @{
+    LogName = 'Security'
+    Id = @(1102, 104)
+} | Select-Object TimeCreated, Id, Message
 ```
 
-:::warning Подозрительные паттерны в 4688
-- `cmd.exe` или `powershell.exe` как дочерний процесс `outlook.exe`, `winword.exe`, `excel.exe`
-- Base64-encoded команды PowerShell (`-enc`, `-EncodedCommand`)
-- `mshta.exe`, `regsvr32.exe`, `rundll32.exe` с URL в аргументах
-- `net.exe user /add` — добавление пользователей
-- `schtasks.exe /create` — создание задач
-- `wscript.exe` или `cscript.exe` из `%TEMP%`
-:::
+### Python-скрипт для разбора EVTX-файлов
 
-### 3.5 Цепочка событий — Pass-the-Hash атака
+```python
+#!/usr/bin/env python3
+"""
+Анализ Windows EVTX через python-evtx
+pip install python-evtx lxml
+"""
 
-```
-Типичная PtH (Pass-the-Hash) атака в Event Log:
+import Evtx.Evtx as evtx
+import Evtx.Views as e_views
+from lxml import etree
+from collections import defaultdict
+import json
 
-[10:00:01] 4624 LogonType=9 (NewCredentials)  ← mimikatz sekurlsa::pth
-           SubjectUser: ATTACKER-PC$
-           TargetUser: administrator
-           IpAddress: 10.0.0.55
+NAMESPACE = "http://schemas.microsoft.com/win/2004/08/events/event"
 
-[10:00:05] 4648 (Explicit Credential Logon)    ← Использование украденного хэша
-           AccountName: administrator
-           TargetServer: DC01.corp.local
+CRITICAL_EVENTS = {
+    4625: "Failed Logon",
+    4624: "Successful Logon",
+    4648: "Logon with Explicit Credentials",
+    4697: "Service Installed",
+    4698: "Scheduled Task Created",
+    4720: "User Account Created",
+    4732: "User Added to Local Admins",
+    7045: "New Service Installed",
+    1102: "Audit Log Cleared",
+    104:  "Event Log Cleared",
+}
 
-[10:00:08] 4624 LogonType=3 (Network)          ← Успешный вход на DC
-           TargetUser: administrator
-           IpAddress: 10.0.0.55  ← Исходная машина атакующего
+def get_data_value(event_data, name):
+    """Извлечь значение поля из EventData."""
+    for data in event_data:
+        if data.get("Name") == name:
+            return data.text or ""
+    return ""
 
-[10:00:10] 4688 NewProcess: cmd.exe            ← Команды на DC
-           ParentProcess: services.exe
-           CommandLine: net user backdoor P@ss1 /add /domain
+def parse_evtx(filepath):
+    results = []
+    
+    with evtx.Evtx(filepath) as log:
+        for record in log.records():
+            try:
+                root = etree.fromstring(record.xml())
+                ns = {"e": NAMESPACE}
+                
+                event_id_elem = root.find(".//e:EventID", ns)
+                if event_id_elem is None:
+                    continue
+                
+                event_id = int(event_id_elem.text)
+                if event_id not in CRITICAL_EVENTS:
+                    continue
+                
+                time_elem = root.find(".//e:TimeCreated", ns)
+                time_str = time_elem.get("SystemTime", "") if time_elem is not None else ""
+                
+                channel_elem = root.find(".//e:Channel", ns)
+                channel = channel_elem.text if channel_elem is not None else ""
+                
+                computer_elem = root.find(".//e:Computer", ns)
+                computer = computer_elem.text if computer_elem is not None else ""
+                
+                event_data = root.findall(".//e:Data", ns)
+                
+                entry = {
+                    "event_id": event_id,
+                    "description": CRITICAL_EVENTS[event_id],
+                    "time": time_str,
+                    "channel": channel,
+                    "computer": computer,
+                }
+                
+                # Специфические поля для разных событий
+                if event_id in (4624, 4625, 4648):
+                    entry["target_user"] = get_data_value(event_data, "TargetUserName")
+                    entry["subject_user"] = get_data_value(event_data, "SubjectUserName")
+                    entry["logon_type"] = get_data_value(event_data, "LogonType")
+                    entry["ip_address"] = get_data_value(event_data, "IpAddress")
+                    entry["workstation"] = get_data_value(event_data, "WorkstationName")
+                
+                elif event_id in (4720, 4732):
+                    entry["target_user"] = get_data_value(event_data, "TargetUserName")
+                    entry["created_by"] = get_data_value(event_data, "SubjectUserName")
+                    entry["group"] = get_data_value(event_data, "TargetSid")
+                
+                elif event_id in (4697, 7045):
+                    entry["service_name"] = get_data_value(event_data, "ServiceName")
+                    entry["service_file"] = get_data_value(event_data, "ServiceFileName")
+                    entry["service_type"] = get_data_value(event_data, "ServiceType")
+                
+                results.append(entry)
+                
+            except Exception as e:
+                continue
+    
+    return results
+
+def detect_brute_force(events):
+    """Выявление брутфорса по событию 4625."""
+    failures = defaultdict(list)
+    
+    for ev in events:
+        if ev["event_id"] == 4625:
+            ip = ev.get("ip_address", "unknown")
+            failures[ip].append(ev)
+    
+    alerts = []
+    for ip, evs in failures.items():
+        if len(evs) >= 10:
+            alerts.append({
+                "type": "BRUTE_FORCE",
+                "severity": "HIGH",
+                "ip": ip,
+                "count": len(evs),
+                "first": evs[0]["time"],
+                "last": evs[-1]["time"],
+                "targets": list(set(e.get("target_user","") for e in evs))
+            })
+    return alerts
+
+if __name__ == "__main__":
+    import sys
+    filepath = sys.argv[1] if len(sys.argv) > 1 else "Security.evtx"
+    
+    print(f"[*] Анализируем: {filepath}")
+    events = parse_evtx(filepath)
+    print(f"[*] Найдено критических событий: {len(events)}")
+    
+    bf_alerts = detect_brute_force(events)
+    if bf_alerts:
+        print(f"\n[!] Обнаружен брутфорс ({len(bf_alerts)} источников):")
+        for a in bf_alerts:
+            print(f"    IP: {a['ip']:20s} попыток: {a['count']:4d}  цели: {a['targets']}")
+    
+    # Вывод критических событий
+    for ev in sorted(events, key=lambda x: x["time"])[-20:]:
+        print(f"[{ev['event_id']}] {ev['time'][:19]} | {ev['description'][:30]:30s} | {ev.get('target_user','')}")
 ```
 
 ---
 
-## 4. 🔥 Анализ Firewall-логов
+## 6.4.7 Firewall логи: iptables
 
-### 4.1 Cisco ASA — Формат логов
-
-Cisco ASA генерирует syslog-сообщения. Примеры:
+### Формат iptables лога
 
 ```
-# Отклонённое соединение (inbound):
-Feb 25 2026 14:23:01 ASA-FW-01 : %ASA-4-106023: Deny tcp src outside:203.0.113.45/54321 dst inside:10.0.0.100/22 by access-group "OUTSIDE_IN" [0x0, 0x0]
-
-# Разрешённое соединение:
-Feb 25 2026 14:23:05 ASA-FW-01 : %ASA-6-302013: Built inbound TCP connection 1234567 for outside:203.0.113.45/54321 (203.0.113.45/54321) to inside:10.0.0.100/443 (10.0.0.100/443)
-
-# Завершение соединения:
-Feb 25 2026 14:25:01 ASA-FW-01 : %ASA-6-302014: Teardown TCP connection 1234567 for outside:203.0.113.45/54321 to inside:10.0.0.100/443 duration 0:01:56 bytes 15234 TCP FINs
-
-# Сканирование портов (threat detection):
-Feb 25 2026 14:30:00 ASA-FW-01 : %ASA-4-733100: [ Scanning] drop rate-1 exceeded. Current burst rate is 15 per second, max configured rate is 10; Current average rate is 8 per second, max configured rate is 5; Cumulative total count is 45
-
-# IDS/IPS алерт:
-Feb 25 2026 14:31:00 ASA-FW-01 : %ASA-4-401004: Shunned packet: 203.0.113.45 ==> 10.0.0.100 on interface outside
+Feb 25 14:32:01 fw01 kernel: [1234567.890] DROPPED IN=eth0 OUT= \
+  MAC=00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd \
+  SRC=203.0.113.42 DST=10.0.0.1 LEN=60 TOS=0x00 PREC=0x00 \
+  TTL=50 ID=12345 DF PROTO=TCP SPT=54321 DPT=22 \
+  WINDOW=65535 RES=0x00 SYN URGP=0
 ```
 
-**Ключевые ASA Message IDs:**
+### Поля iptables лога
+
+| Поле | Описание |
+|------|----------|
+| `IN=eth0` | Входящий интерфейс |
+| `OUT=eth1` | Исходящий интерфейс |
+| `SRC=` | IP источника |
+| `DST=` | IP назначения |
+| `PROTO=TCP` | Протокол |
+| `SPT=` | Порт источника |
+| `DPT=` | Порт назначения |
+| `SYN` | TCP-флаги |
+| `WINDOW=` | Размер окна TCP |
+| `TTL=` | Time to Live |
+
+### Настройка логирования iptables
+
+```bash
+# Добавить правила логирования ПЕРЕД DROP/REJECT
+iptables -I INPUT -j LOG --log-prefix "DROPPED " --log-level 4
+iptables -I FORWARD -j LOG --log-prefix "FORWARD_DROP " --log-level 4
+
+# Логировать сканирование портов (SYN без ACK)
+iptables -A INPUT -p tcp --tcp-flags ALL SYN -m limit --limit 1/s \
+  -j LOG --log-prefix "PORT_SCAN " --log-level 4
+
+# Сохранить правила
+iptables-save > /etc/iptables/rules.v4
+```
+
+### Анализ iptables лога
+
+```bash
+# Топ-10 IP по дропам
+grep "DROPPED" /var/log/kern.log | \
+  grep -oP 'SRC=\K[\d.]+' | \
+  sort | uniq -c | sort -rn | head -10
+
+# Популярные порты назначения (атакуемые сервисы)
+grep "DROPPED" /var/log/kern.log | \
+  grep -oP 'DPT=\K\d+' | \
+  sort | uniq -c | sort -rn | head -20
+
+# SYN flood с одного IP
+grep "DROPPED" /var/log/kern.log | \
+  grep "SYN" | \
+  grep -oP 'SRC=\K[\d.]+' | \
+  sort | uniq -c | sort -rn | head -5
+```
+
+---
+
+## 6.4.8 Firewall логи: pfSense и Cisco ASA
+
+### pfSense лог (filterlog)
+
+```
+Feb 25 14:32:01 pfSense filterlog[1234]: \
+  6,,,1000000103,em0,match,block,in,4,0x0,,50,12345,0,DF,6,tcp,60, \
+  203.0.113.42,10.0.0.1,54321,22,0,S,0,,65535,6,1460
+```
+
+Разбивка по полям:
+```
+rule_number, subrule, anchor, tracker, interface, reason, action, direction,
+ip_version, tos, ecn, ttl, id, offset, flags, proto_id, proto_name, length,
+src_ip, dst_ip, src_port, dst_port, data_len, tcp_flags, seq, ack, window,
+urg, options
+```
+
+### Cisco ASA лог
+
+```
+%ASA-4-106023: Deny tcp src outside:203.0.113.42/54321 \
+  dst inside:10.0.0.10/80 by access-group "outside_access_in" [0x0, 0x0]
+
+%ASA-6-302013: Built inbound TCP connection 123456 for \
+  outside:203.0.113.42/54321 (203.0.113.42/54321) to \
+  inside:10.0.0.10/443 (10.0.0.10/443)
+
+%ASA-4-733100: Object drop threshold exceeded for tcp scanning, current rate: 50/s
+```
+
+### Severity коды Cisco ASA
+
+| Код | Уровень |
+|-----|---------|
+| 0 | Emergency |
+| 1 | Alert |
+| 2 | Critical |
+| 3 | Error |
+| 4 | Warning |
+| 5 | Notification |
+| 6 | Informational |
+| 7 | Debugging |
+
+### Важные Message ID Cisco ASA
 
 | Message ID | Описание |
 |------------|----------|
-| `%ASA-4-106023` | Deny по ACL |
-| `%ASA-6-302013` | Построение TCP-соединения |
-| `%ASA-6-302014` | Разрыв TCP-соединения |
-| `%ASA-6-302015` | Построение UDP-потока |
-| `%ASA-6-302016` | Разрыв UDP-потока |
-| `%ASA-4-733100` | Превышение порога threat detection |
-| `%ASA-5-304001` | URL-доступ |
-| `%ASA-2-106006` | Deny inbound (высокая приоритетность) |
-
-### 4.2 iptables — Формат логов
-
-```
-# /var/log/syslog или journalctl
-Feb 25 14:45:01 gateway kernel: [UFW BLOCK] IN=eth0 OUT= MAC=00:1a:2b:3c:4d:5e:ff:ee:dd:cc:bb:aa:08:00 SRC=203.0.113.100 DST=10.0.0.1 LEN=44 TOS=0x00 PREC=0x00 TTL=245 ID=54321 PROTO=TCP SPT=12345 DPT=22 WINDOW=1024 RES=0x00 SYN URGP=0
-
-Feb 25 14:45:02 gateway kernel: [UFW BLOCK] IN=eth0 OUT= MAC=... SRC=203.0.113.100 DST=10.0.0.1 LEN=44 TTL=245 PROTO=TCP SPT=12346 DPT=23 WINDOW=1024 RES=0x00 SYN URGP=0
-
-Feb 25 14:45:03 gateway kernel: [UFW BLOCK] IN=eth0 OUT= MAC=... SRC=203.0.113.100 DST=10.0.0.1 LEN=44 TTL=245 PROTO=TCP SPT=12347 DPT=80 WINDOW=1024 RES=0x00 SYN URGP=0
-```
-
-Разбор полей iptables-лога:
-
-| Поле | Значение |
-|------|---------|
-| `IN=eth0` | Входящий интерфейс |
-| `OUT=` | Исходящий интерфейс (пустой = входящий пакет) |
-| `SRC=203.0.113.100` | IP источника |
-| `DST=10.0.0.1` | IP назначения |
-| `PROTO=TCP` | Протокол |
-| `SPT=12345` | Порт источника |
-| `DPT=22` | Порт назначения |
-| `SYN` | TCP-флаг SYN |
-| `TTL=245` | Time-to-live |
-
-### 4.3 Обнаружение сканирования портов в iptables-логах
-
-```python
-import re
-from collections import defaultdict
-from datetime import datetime, timedelta
-
-IPTABLES_PATTERN = re.compile(
-    r'(\w+ \d+ \d+:\d+:\d+) .* SRC=(\S+) DST=(\S+) .* PROTO=(\w+) SPT=(\d+) DPT=(\d+)'
-)
-
-def detect_port_scan(log_file, threshold=20, window_seconds=60):
-    """
-    Обнаружение горизонтального сканирования: один IP → много портов
-    threshold: минимальное число уникальных портов для алерта
-    """
-    # {src_ip: {timestamp: [dst_port, ...]}}
-    scan_data = defaultdict(lambda: defaultdict(set))
-    
-    with open(log_file) as f:
-        for line in f:
-            m = IPTABLES_PATTERN.search(line)
-            if m:
-                ts_str, src, dst, proto, sport, dport = m.groups()
-                # Упрощённое время (без года)
-                scan_data[src][ts_str].add(int(dport))
-    
-    alerts = []
-    for src_ip, time_data in scan_data.items():
-        # Собираем все порты за скользящее окно
-        all_ports = set()
-        for ts, ports in time_data.items():
-            all_ports.update(ports)
-        
-        if len(all_ports) >= threshold:
-            alerts.append({
-                'type': 'PORT_SCAN',
-                'src_ip': src_ip,
-                'unique_ports': len(all_ports),
-                'ports_sample': sorted(list(all_ports))[:20],
-                'severity': 'HIGH' if len(all_ports) > 100 else 'MEDIUM'
-            })
-    
-    return alerts
-
-# Запуск
-alerts = detect_port_scan('/var/log/ufw.log', threshold=20)
-for a in alerts:
-    print(f"[{a['severity']}] {a['type']}: {a['src_ip']} → {a['unique_ports']} портов")
-    print(f"  Примеры портов: {a['ports_sample']}")
-```
-
-### 4.4 pf (BSD/macOS Firewall)
-
-```
-# /var/log/pflog или pfctl -s rules
-Feb 25 14:55:01.123456 rule 15/0(match): block in on em0: 
-  203.0.113.50.4444 > 10.0.0.2.80: Flags [S], seq 1234567890, win 65535, length 0
-
-Feb 25 14:55:02.234567 rule 0/0(match): pass in on em0: 
-  10.0.0.50.52341 > 8.8.8.8.53: UDP, length 32
-```
+| 106001, 106006, 106023 | ACL deny |
+| 302013, 302014 | TCP connection built/torn down |
+| 302015, 302016 | UDP connection |
+| 305011, 305012 | NAT translation |
+| 402116, 402117 | IPSEC |
+| 733100 | Scanning threat detected |
+| 733101 | Host detected as scanning |
+| 710003 | TCP access denied |
 
 ---
 
-## 5. 🔎 SPL-запросы Splunk
+## 6.4.9 Корреляция событий из разных источников
 
-### 5.1 Apache-логи в Splunk
+Корреляция — ключевой навык SOC. Одно событие ничего не значит; совпадение нескольких — инцидент.
+
+```
+ Пример корреляции: компрометация веб-сервера
+ ═════════════════════════════════════════════
+
+ 14:30:00  Firewall    SRC=203.0.113.42 → DST=10.0.0.10:80 ALLOW
+           │
+           ▼
+ 14:30:01  Apache      GET /login.php → 401 (попытка 1 из 500)
+ 14:30:58  Apache      POST /login.php → 200 (вход успешен!)
+           │
+           ▼
+ 14:31:00  Apache      GET /admin/upload.php → 200
+ 14:31:05  Apache      POST /admin/upload.php → 200 (загрузка файла)
+           │
+           ▼
+ 14:31:10  Windows     EventID 4688: новый процесс cmd.exe
+                       Parent: php-cgi.exe (!)
+           │
+           ▼
+ 14:31:15  Firewall    SRC=10.0.0.10 → DST=203.0.113.42:4444 ALLOW
+                       (обратное соединение — reverse shell!)
+           │
+           ▼
+ 14:31:20  Windows     EventID 4720: создан новый пользователь "svc_backup"
+ 14:31:25  Windows     EventID 4732: svc_backup добавлен в Administrators
+```
+
+Один аналитик, наблюдающий только один источник, ничего не заметит. SIEM с корреляцией — заметит всё.
+
+---
+
+## 6.4.10 Запросы в Splunk
+
+### Базовый синтаксис Splunk SPL
 
 ```spl
--- Топ-20 IP по количеству запросов:
-index=web sourcetype=access_combined
+index=web_logs sourcetype=access_combined
 | stats count by clientip
 | sort -count
 | head 20
-
--- Подозрительные User-Agent:
-index=web sourcetype=access_combined
-| search useragent IN ("*sqlmap*", "*nikto*", "*nmap*", "*dirbuster*", "*gobuster*", "*wfuzz*")
-| stats count by clientip, useragent
-| sort -count
-
--- Обнаружение Path Traversal:
-index=web sourcetype=access_combined
-| where match(uri_path, "(\.\./|%2e%2e|%252e%252e|/etc/passwd|/etc/shadow|boot\.ini)")
-| table _time, clientip, uri_path, status, useragent
-
--- Коды 4xx/5xx — потенциальные сканирования:
-index=web sourcetype=access_combined status>=400
-| eval status_class=case(
-    status>=500, "5xx Server Error",
-    status>=400, "4xx Client Error"
-  )
-| stats count by clientip, status_class
-| where count > 50
-| sort -count
-
--- SQL Injection по URI:
-index=web sourcetype=access_combined
-| where match(uri_query, "(?i)(union\s+select|'.*or.*'|--\s*$|xp_cmdshell|information_schema|sleep\s*\(|waitfor\s+delay)")
-| eval decoded_uri=urldecode(uri_query)
-| table _time, clientip, uri_path, decoded_uri, status
-
--- Временна́я шкала атаки от одного IP:
-index=web sourcetype=access_combined clientip="203.0.113.45"
-| sort _time
-| table _time, method, uri_path, uri_query, status, bytes, useragent
-
--- Аномальный объём данных (Data Exfiltration):
-index=web sourcetype=access_combined
-| stats sum(bytes) as total_bytes by clientip
-| eval total_mb=round(total_bytes/1024/1024, 2)
-| where total_mb > 100
-| sort -total_mb
 ```
 
-### 5.2 Windows Security Events в Splunk
+### Обнаружение брутфорса (Apache)
 
 ```spl
--- Брутфорс: много 4625 от одного IP:
-index=windows EventCode=4625
-| stats count by src_ip, TargetUserName
-| where count > 10
-| sort -count
-
--- Успешный вход после серии неудачных (Брутфорс успех):
-index=windows EventCode IN (4625, 4624)
-| eval is_fail=if(EventCode==4625, 1, 0)
-| eval is_success=if(EventCode==4624, 1, 0)
-| stats sum(is_fail) as failures, sum(is_success) as successes by src_ip, TargetUserName
-| where failures > 5 AND successes > 0
-| eval attack_likely=if(failures > 20, "HIGH", "MEDIUM")
-
--- Создание новых пользователей (4720):
-index=windows EventCode=4720
-| table _time, SubjectUserName, SubjectDomainName, TargetUserName, TargetDomainName, ComputerName
-| sort _time
-
--- Добавление в группу Administrators (4732):
-index=windows EventCode=4732
-| where TargetUserName="Administrators" OR TargetUserName="Domain Admins"
-| table _time, SubjectUserName, MemberName, TargetUserName, ComputerName
-
--- Подозрительные процессы (4688):
-index=windows EventCode=4688
-| where match(NewProcessName, "(?i)(mimikatz|procdump|psexec|wce\.exe|fgdump)")
-  OR match(CommandLine, "(?i)(-enc|-encodedcommand|downloadstring|invoke-expression|iex)")
-  OR (ParentProcessName IN ("winword.exe","excel.exe","outlook.exe") AND NewProcessName IN ("cmd.exe","powershell.exe","wscript.exe"))
-| table _time, ComputerName, SubjectUserName, ParentProcessName, NewProcessName, CommandLine
-
--- NTLM Pass-the-Hash паттерн (4648 + 4624 LogonType 9):
-index=windows EventCode IN (4648, 4624)
-| eval pth_indicator=if(EventCode==4624 AND LogonType==9, 1, 0)
-| stats sum(pth_indicator) as pth_count by src_ip, TargetUserName, TargetServerName
-| where pth_count > 0
-
--- Horizontal movement: один пользователь входит на много машин:
-index=windows EventCode=4624 LogonType IN (3, 10)
-| stats dc(ComputerName) as machines_accessed, values(ComputerName) as machines by TargetUserName
-| where machines_accessed > 5
-| sort -machines_accessed
+index=web_logs sourcetype=access_combined
+    (status=401 OR status=403)
+    uri_path="/login*"
+| bucket _time span=5m
+| stats count as failures by clientip, _time
+| where failures > 20
+| eval severity=case(failures>100,"CRITICAL", failures>50,"HIGH", true(),"MEDIUM")
+| table _time, clientip, failures, severity
+| sort -failures
 ```
 
-### 5.3 Firewall-логи в Splunk
+### Обнаружение SQL-инъекций
 
 ```spl
--- Топ источников заблокированных соединений:
-index=firewall action=blocked
-| stats count by src_ip
-| sort -count | head 20
-
--- Обнаружение сканирования портов:
-index=firewall action=blocked
-| stats dc(dest_port) as unique_ports, values(dest_port) as ports by src_ip, dest_ip
-| where unique_ports > 20
-| sort -unique_ports
-
--- Трафик на нестандартные порты изнутри (потенциальный C2):
-index=firewall src_ip="10.*" action=allowed
-| where NOT dest_port IN (80, 443, 53, 22, 25, 110, 143, 465, 587, 993, 995)
-| stats count by src_ip, dest_ip, dest_port
+index=web_logs sourcetype=access_combined
+| eval uri_lower=lower(uri_query)
+| where match(uri_lower, "union\s+select|or\s+1=1|drop\s+table|sleep\s*\(|benchmark\s*\(|xp_cmdshell|information_schema")
+| stats count by clientip, uri_path, uri_query
 | sort -count
+```
 
--- Аномальный исходящий трафик:
-index=firewall action=allowed direction=outbound
-| stats sum(bytes) as total_bytes by src_ip
-| eval total_mb=round(total_bytes/1024/1024,2)
-| where total_mb > 500
-| sort -total_mb
+### Обнаружение сканирования
 
--- Cisco ASA: разбор логов 106023:
-index=cisco_asa sourcetype=cisco:asa
-| rex field=_raw "Deny (?P<proto>\w+) src (?P<zone_src>\w+):(?P<src_ip>[\d.]+)/(?P<src_port>\d+) dst (?P<zone_dst>\w+):(?P<dst_ip>[\d.]+)/(?P<dst_port>\d+)"
-| stats count by src_ip, dst_ip, dst_port, proto
-| sort -count
+```spl
+index=web_logs sourcetype=access_combined status=404
+| bucket _time span=1m
+| stats count as not_found by clientip, _time
+| where not_found > 50
+| join clientip [
+    search index=web_logs sourcetype=access_combined status=404
+    | stats dc(uri_path) as unique_paths by clientip
+]
+| where unique_paths > 30
+| table clientip, _time, not_found, unique_paths
+```
+
+### Корреляция Windows + Web
+
+```spl
+index=windows_logs EventCode=4625
+| eval src_ip=IpAddress
+| join src_ip [
+    search index=web_logs sourcetype=access_combined (status=401 OR status=403)
+    | rename clientip as src_ip
+    | stats count as web_failures by src_ip
+]
+| stats count as win_failures, values(web_failures) as web_failures by src_ip
+| where win_failures > 10 AND web_failures > 10
+| eval combined_score=win_failures+web_failures
+| sort -combined_score
+```
+
+### Обнаружение очистки логов
+
+```spl
+index=windows_logs (EventCode=1102 OR EventCode=104)
+| table _time, host, user, EventCode, Message
+| eval alert="LOG CLEARED - CRITICAL"
+| sort _time
 ```
 
 ---
 
-## 6. 🔎 KQL-запросы Elasticsearch
+## 6.4.11 Запросы в ELK (Elasticsearch + Kibana)
 
-### 6.1 Apache-логи в Kibana/Elasticsearch
-
-```json
-// Топ IP по запросам (Aggregation)
-GET apache-logs-*/_search
-{
-  "size": 0,
-  "aggs": {
-    "top_ips": {
-      "terms": {
-        "field": "clientip.keyword",
-        "size": 20,
-        "order": { "_count": "desc" }
-      }
-    }
-  }
-}
-
-// Подозрительные User-Agent (KQL в Kibana Discover)
-// agent: (*sqlmap* OR *nikto* OR *nmap* OR *dirbuster* OR *gobuster*)
-
-// Поиск Path Traversal через Query DSL
-GET apache-logs-*/_search
-{
-  "query": {
-    "bool": {
-      "should": [
-        { "wildcard": { "request.keyword": "*../..* " }},
-        { "wildcard": { "request.keyword": "*%2e%2e*" }},
-        { "match": { "request": "/etc/passwd" }},
-        { "match": { "request": "boot.ini" }}
-      ],
-      "minimum_should_match": 1
-    }
-  },
-  "_source": ["@timestamp", "clientip", "request", "response", "agent"]
-}
-```
-
-```python
-# Python Elasticsearch client для поиска SQL Injection
-from elasticsearch import Elasticsearch
-
-es = Elasticsearch(['http://localhost:9200'])
-
-sqli_query = {
-    "query": {
-        "bool": {
-            "should": [
-                {"regexp": {"request.keyword": ".*[Uu][Nn][Ii][Oo][Nn].*[Ss][Ee][Ll][Ee][Cc][Tt].*"}},
-                {"wildcard": {"request.keyword": "*' OR '*"}},
-                {"wildcard": {"request.keyword": "*INFORMATION_SCHEMA*"}},
-                {"wildcard": {"request.keyword": "*xp_cmdshell*"}},
-                {"regexp": {"request.keyword": ".*[Ss][Ll][Ee][Ee][Pp]\\(.*"}},
-            ],
-            "minimum_should_match": 1
-        }
-    },
-    "sort": [{"@timestamp": "asc"}],
-    "_source": ["@timestamp", "clientip", "request", "response", "agent"],
-    "size": 100
-}
-
-result = es.search(index="apache-logs-*", body=sqli_query)
-for hit in result['hits']['hits']:
-    src = hit['_source']
-    print(f"[{src.get('@timestamp')}] {src.get('clientip')} → {src.get('request')[:100]}")
-```
-
-### 6.2 Windows Events в Elasticsearch
+### Elasticsearch Query DSL
 
 ```json
-// KQL в Kibana: Брутфорс 4625
-// winlog.event_id: 4625 AND winlog.event_data.IpAddress: *
-
-// Query DSL для поиска брутфорса
-GET winlogbeat-*/_search
+// Брутфорс: много 401 с одного IP
+POST /apache-logs-*/_search
 {
-  "size": 0,
   "query": {
     "bool": {
       "must": [
-        { "term": { "winlog.event_id": 4625 }},
-        { "range": { "@timestamp": { "gte": "now-1h" }}}
+        { "term": { "response": 401 } },
+        { "range": { "@timestamp": { "gte": "now-1h" } } }
       ]
     }
   },
   "aggs": {
     "by_ip": {
       "terms": {
-        "field": "winlog.event_data.IpAddress.keyword",
-        "size": 20
+        "field": "clientip",
+        "size": 20,
+        "order": { "_count": "desc" }
       },
       "aggs": {
-        "by_user": {
-          "terms": {
-            "field": "winlog.event_data.TargetUserName.keyword",
-            "size": 10
-          }
-        }
+        "count": { "value_count": { "field": "clientip" } }
       }
+    }
+  },
+  "size": 0
+}
+```
+
+```json
+// SQL-инъекции в URI
+POST /apache-logs-*/_search
+{
+  "query": {
+    "bool": {
+      "should": [
+        { "match_phrase": { "request": "UNION SELECT" } },
+        { "match_phrase": { "request": "OR 1=1" } },
+        { "regexp": { "request": ".*sleep\\s*\\(.*" } },
+        { "match_phrase": { "request": "information_schema" } }
+      ],
+      "minimum_should_match": 1,
+      "filter": [
+        { "range": { "@timestamp": { "gte": "now-24h" } } }
+      ]
+    }
+  },
+  "_source": ["@timestamp", "clientip", "request", "response"],
+  "sort": [{ "@timestamp": { "order": "desc" } }]
+}
+```
+
+### Logstash pipeline для Apache
+
+```ruby
+# /etc/logstash/conf.d/apache.conf
+input {
+  file {
+    path => "/var/log/apache2/access.log"
+    start_position => "beginning"
+    sincedb_path => "/var/lib/logstash/sincedb_apache"
+    type => "apache_access"
+  }
+}
+
+filter {
+  grok {
+    match => {
+      "message" => '%{COMBINEDAPACHELOG}'
+    }
+  }
+  
+  date {
+    match => ["timestamp", "dd/MMM/yyyy:HH:mm:ss Z"]
+    target => "@timestamp"
+  }
+  
+  geoip {
+    source => "clientip"
+    target => "geoip"
+  }
+  
+  useragent {
+    source => "agent"
+    target => "ua"
+  }
+  
+  # Определить тип атаки
+  if [request] =~ /union\s+select/i {
+    mutate { add_tag => ["sql_injection", "attack"] }
+  }
+  if [agent] =~ /sqlmap|nikto|nmap/i {
+    mutate { add_tag => ["scanner", "attack"] }
+  }
+  if [response] == "401" {
+    mutate { add_tag => ["auth_failure"] }
+  }
+  
+  mutate {
+    convert => { "response" => "integer" "bytes" => "integer" }
+  }
+}
+
+output {
+  elasticsearch {
+    hosts => ["localhost:9200"]
+    index => "apache-logs-%{+YYYY.MM.dd}"
+  }
+  
+  # Отдельный индекс для атак
+  if "attack" in [tags] {
+    elasticsearch {
+      hosts => ["localhost:9200"]
+      index => "security-alerts-%{+YYYY.MM.dd}"
     }
   }
 }
 ```
 
-```json
-// Поиск подозрительного PowerShell (Event 4688)
-GET winlogbeat-*/_search
-{
-  "query": {
-    "bool": {
-      "must": [
-        { "term": { "winlog.event_id": 4688 }},
-        {
-          "bool": {
-            "should": [
-              { "wildcard": { "winlog.event_data.CommandLine": "*-enc*" }},
-              { "wildcard": { "winlog.event_data.CommandLine": "*-EncodedCommand*" }},
-              { "wildcard": { "winlog.event_data.CommandLine": "*DownloadString*" }},
-              { "wildcard": { "winlog.event_data.CommandLine": "*Invoke-Expression*" }},
-              { "wildcard": { "winlog.event_data.CommandLine": "*IEX*" }}
-            ],
-            "minimum_should_match": 1
-          }
-        }
-      ]
-    }
-  },
-  "_source": [
-    "@timestamp",
-    "winlog.computer_name",
-    "winlog.event_data.SubjectUserName",
-    "winlog.event_data.NewProcessName",
-    "winlog.event_data.CommandLine",
-    "winlog.event_data.ParentProcessName"
-  ]
-}
+### Kibana: создание дашборда безопасности
+
+```
+ Дашборд "Security Overview" в Kibana
+ ════════════════════════════════════════
+
+ ┌──────────────────────┬──────────────────────┐
+ │  Auth Failures/hour  │   Top Attack IPs     │
+ │  [Line chart]        │   [Data table]       │
+ │  ████▓▓▒▒░░         │   1. 203.0.113.42    │
+ │                      │   2. 198.51.100.17   │
+ └──────────────────────┴──────────────────────┘
+ ┌──────────────────────┬──────────────────────┐
+ │  Attack Types        │  Geographic Map      │
+ │  [Pie chart]         │  [Tile map]          │
+ │  SQL Inj: 45%       │  ·· RU ··· CN ·      │
+ │  Brute: 30%         │  · US ·· UA ·        │
+ │  Scan: 25%          │                      │
+ └──────────────────────┴──────────────────────┘
 ```
 
 ---
 
-## 7. 🔗 Корреляционные Правила
+## 6.4.12 Практические упражнения
 
-### 7.1 Принцип корреляции — Pyramid of Pain
+### Упражнение 1: Найди атакующего
 
-```
-                    TTPs (Сложно менять)        ← САМЫЙ ЦЕННЫЙ УРОВЕНЬ
-                   /                  \
-                  / Tools (Инструменты) \
-                 /______________________\
-                / Network/Host Artifacts \
-               /________________________\
-              /   Domain Names            \
-             /____________________________\
-            /    IP Addresses              \
-           /________________________________\
-          /         Hash Values              \
-         /____________________________________\
-                   (Легко менять)             ← НАИМЕНЕЕ ЦЕННЫЙ
-```
-
-### 7.2 Корреляция: Apache + Windows + Firewall
-
-**Сценарий: Атакующий сканирует веб-сервер → эксплуатирует SQLi → входит через RDP**
+Дан фрагмент access.log. Определите:
+1. IP атакующего
+2. Тип атаки
+3. Успешна ли атака
 
 ```
-[ЭТАП 1] Firewall logs: Port scan detection
-         203.0.113.45 → 10.0.0.100 : порты 22,80,443,3389,8080,...
-
-[ЭТАП 2] Apache access log: SQLi попытки
-         203.0.113.45 - GET /login?user=admin' OR '1'='1 - 200
-
-[ЭТАП 3] Apache access log: Успешный доступ к /admin
-         203.0.113.45 - GET /admin/config.php - 200
-
-[ЭТАП 4] Windows 4625: Множество неудачных RDP входов
-         IpAddress: 203.0.113.45 → TargetUser: Administrator
-
-[ЭТАП 5] Windows 4624: Успешный RDP вход
-         IpAddress: 203.0.113.45, LogonType=10, User=Administrator
-
-[ЭТАП 6] Windows 4688: Подозрительный процесс
-         whoami, net user, net localgroup administrators
+198.51.100.77 - - [25/Feb/2026:10:00:01] "GET /index.php HTTP/1.1" 200 1234 "-" "Mozilla/5.0"
+198.51.100.77 - - [25/Feb/2026:10:00:02] "GET /login.php HTTP/1.1" 200 4512 "-" "Mozilla/5.0"
+198.51.100.77 - - [25/Feb/2026:10:00:03] "POST /login.php HTTP/1.1" 401 234 "-" "Mozilla/5.0"
+198.51.100.77 - - [25/Feb/2026:10:00:04] "POST /login.php HTTP/1.1" 401 234 "-" "Mozilla/5.0"
+[... 847 строк аналогичных ...]
+198.51.100.77 - - [25/Feb/2026:10:08:34] "POST /login.php HTTP/1.1" 302 0 "-" "Mozilla/5.0"
+198.51.100.77 - - [25/Feb/2026:10:08:35] "GET /admin/dashboard.php HTTP/1.1" 200 8923 "-" "Mozilla/5.0"
+198.51.100.77 - - [25/Feb/2026:10:08:40] "POST /admin/upload.php HTTP/1.1" 200 512 "-" "Mozilla/5.0"
 ```
 
-**SPL-корреляция для этого сценария:**
+**Ответ:**
+- IP: `198.51.100.77`
+- Тип: брутфорс + загрузка файла
+- Успех: да (302 → redirect на dashboard, затем upload)
+
+### Упражнение 2: SPL-запрос
+
+Напишите Splunk-запрос, который находит IP-адреса, совершившие более 5 неудачных попыток входа (EventID 4625) за 10 минут, с последующим успешным входом (EventID 4624).
 
 ```spl
--- Корреляционное правило: Сканирование → SQLi → RDP
--- Шаг 1: Найти IP с признаками сканирования
-[ search index=firewall action=blocked
-  | stats dc(dest_port) as ports by src_ip
-  | where ports > 15
-  | fields src_ip ]
-
--- Шаг 2: Проверить SQLi от тех же IP
-index=web sourcetype=access_combined
-| where match(uri_query, "(?i)(union|or.*=.*|'.*'|--)")
-| join clientip [
-    search index=firewall action=blocked
-    | stats dc(dest_port) as scan_ports by src_ip
-    | where scan_ports > 15
-    | rename src_ip as clientip
-]
-| stats count as sqli_attempts, dc(uri_path) as paths by clientip
-| where sqli_attempts > 3
-
--- Шаг 3: Коррелировать с Windows 4624 RDP
-index=windows EventCode=4624 LogonType=10
-| join src_ip [
-    search index=web sourcetype=access_combined
-    | where match(uri_query, "(?i)(union|or.*=.*)")
-    | stats count by clientip
-    | where count > 3
-    | rename clientip as src_ip
-]
-| table _time, ComputerName, TargetUserName, src_ip
-```
-
-### 7.3 Sigma Rule — Универсальный формат корреляции
-
-```yaml
-# sigma_rule_apache_sqli.yml
-title: SQL Injection Attempt in Apache Access Log
-id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
-status: stable
-description: Detects SQL injection patterns in Apache web server access logs
-references:
-  - https://owasp.org/www-community/attacks/SQL_Injection
-author: SOC Team
-date: 2026/02/25
-logsource:
-  category: webserver
-  product: apache
-detection:
-  keywords:
-    - "' OR '"
-    - "UNION SELECT"
-    - "1=1"
-    - "xp_cmdshell"
-    - "INFORMATION_SCHEMA"
-    - "sleep("
-    - "waitfor delay"
-    - "benchmark("
-    - "%27"    # URL-encoded '
-    - "%22"    # URL-encoded "
-    - "0x31303235"  # Hex encoding
-  condition: keywords
-falsepositives:
-  - Legitimate SQL in URL parameters (rare)
-  - Security testing
-level: high
-tags:
-  - attack.initial_access
-  - attack.t1190  # Exploit Public-Facing Application
-fields:
-  - clientip
-  - request
-  - status
-  - agent
+// Решение
+index=windows_logs (EventCode=4625 OR EventCode=4624)
+| eval event_type=case(EventCode=4625, "failure", EventCode=4624, "success")
+| bucket _time span=10m
+| stats count(eval(event_type="failure")) as failures,
+        count(eval(event_type="success")) as successes
+        by IpAddress, _time
+| where failures > 5 AND successes > 0
+| eval alert="Brute Force + Successful Login"
+| table _time, IpAddress, failures, successes, alert
+| sort -failures
 ```
 
 ---
 
-## 8. 📝 Практическое задание
+## 📌 Итоги главы
 
-### Сценарий: Обнаружение SQL Injection через Apache-лог
-
-У вас есть следующий фрагмент лога. Проведите анализ и ответьте на вопросы.
-
-**Лог-файл (фрагмент):**
-
-```
-# /var/log/apache2/access.log
-192.168.50.25 - - [25/Feb/2026:09:00:01 +0000] "GET / HTTP/1.1" 200 1234 "-" "Mozilla/5.0"
-192.168.50.25 - - [25/Feb/2026:09:00:15 +0000] "GET /robots.txt HTTP/1.1" 200 45 "-" "Mozilla/5.0"
-192.168.50.25 - - [25/Feb/2026:09:01:02 +0000] "GET /login HTTP/1.1" 200 3456 "-" "sqlmap/1.7.8#stable (https://sqlmap.org)"
-192.168.50.25 - - [25/Feb/2026:09:01:03 +0000] "GET /login?username=admin%27%20OR%20%271%27%3D%271 HTTP/1.1" 500 0 "-" "sqlmap/1.7.8"
-192.168.50.25 - - [25/Feb/2026:09:01:04 +0000] "GET /login?username=admin%27%20AND%20SLEEP%285%29-- HTTP/1.1" 200 3456 "-" "sqlmap/1.7.8"
-192.168.50.25 - - [25/Feb/2026:09:01:05 +0000] "GET /login?username=1%20UNION%20SELECT%20NULL%2CNULL%2CNULL-- HTTP/1.1" 200 3456 "-" "sqlmap/1.7.8"
-192.168.50.25 - - [25/Feb/2026:09:01:10 +0000] "GET /login?username=1%20UNION%20SELECT%20username%2Cpassword%2CNULL%20FROM%20users-- HTTP/1.1" 200 4567 "-" "sqlmap/1.7.8"
-10.0.0.5 - - [25/Feb/2026:09:05:00 +0000] "GET /admin HTTP/1.1" 403 234 "-" "Mozilla/5.0"
-10.0.0.5 - admin [25/Feb/2026:09:10:00 +0000] "GET /admin HTTP/1.1" 200 8901 "-" "Mozilla/5.0"
-```
-
-**Задание:**
-
-```python
-# task_6_4.py — Ваше решение
-
-import re
-from urllib.parse import unquote
-
-log_data = """
-192.168.50.25 - - [25/Feb/2026:09:01:02 +0000] "GET /login HTTP/1.1" 200 3456 "-" "sqlmap/1.7.8#stable"
-192.168.50.25 - - [25/Feb/2026:09:01:03 +0000] "GET /login?username=admin%27%20OR%20%271%27%3D%271 HTTP/1.1" 500 0 "-" "sqlmap/1.7.8"
-192.168.50.25 - - [25/Feb/2026:09:01:04 +0000] "GET /login?username=admin%27%20AND%20SLEEP%285%29-- HTTP/1.1" 200 3456 "-" "sqlmap/1.7.8"
-192.168.50.25 - - [25/Feb/2026:09:01:05 +0000] "GET /login?username=1%20UNION%20SELECT%20NULL%2CNULL%2CNULL-- HTTP/1.1" 200 3456 "-" "sqlmap/1.7.8"
-192.168.50.25 - - [25/Feb/2026:09:01:10 +0000] "GET /login?username=1%20UNION%20SELECT%20username%2Cpassword%2CNULL%20FROM%20users-- HTTP/1.1" 200 4567 "-" "sqlmap/1.7.8"
-""".strip()
-
-# Задание 1: Распарсить лог и декодировать URI
-# Задание 2: Определить тип SQLi (Boolean-based, Time-based, UNION-based)
-# Задание 3: Оценить успешность атаки (анализ кодов ответа)
-# Задание 4: Написать SPL-запрос для Splunk чтобы поймать эту атаку
-# Задание 5: Составить IOC-список
-
-# --- РЕШЕНИЕ ---
-LOG_RE = re.compile(
-    r'(\S+) \S+ (\S+) \[([^\]]+)\] "(\w+) (\S+) HTTP/[\d.]+" (\d+) (\S+) "[^"]*" "([^"]*)"'
-)
-
-sqli_types = {
-    'boolean': re.compile(r"OR\s+'?\d+'?\s*=\s*'?\d", re.I),
-    'time_based': re.compile(r"SLEEP\s*\(|WAITFOR\s+DELAY|BENCHMARK\s*\(", re.I),
-    'union': re.compile(r"UNION\s+SELECT", re.I),
-    'error_based': re.compile(r"EXTRACTVALUE|UPDATEXML|exp\(~", re.I),
-}
-
-print("=== АНАЛИЗ SQL INJECTION АТАКИ ===\n")
-for line in log_data.split('\n'):
-    m = LOG_RE.match(line)
-    if not m:
-        continue
-    ip, user, ts, method, uri, status, size, ua = m.groups()
-    decoded = unquote(uri)
-    
-    detected_types = [t for t, p in sqli_types.items() if p.search(decoded)]
-    if detected_types:
-        print(f"[{ts}] IP: {ip}")
-        print(f"  URI (decoded): {decoded}")
-        print(f"  Status: {status} | UA: {ua[:40]}")
-        print(f"  Тип SQLi: {', '.join(detected_types)}")
-        if status == '200' and size != '0':
-            print(f"  ⚠ ВЕРОЯТНО УСПЕШНЫЙ ЗАПРОС (статус 200, размер {size} байт)")
-        print()
-```
-
-**Ожидаемый вывод:**
-
-```
-=== АНАЛИЗ SQL INJECTION АТАКИ ===
-
-[25/Feb/2026:09:01:03 +0000] IP: 192.168.50.25
-  URI (decoded): /login?username=admin' OR '1'='1
-  Status: 500 | UA: sqlmap/1.7.8
-  Тип SQLi: boolean
-
-[25/Feb/2026:09:01:04 +0000] IP: 192.168.50.25
-  URI (decoded): /login?username=admin' AND SLEEP(5)--
-  Status: 200 | UA: sqlmap/1.7.8
-  Тип SQLi: time_based
-  ⚠ ВЕРОЯТНО УСПЕШНЫЙ ЗАПРОС (статус 200, размер 3456 байт)
-
-[25/Feb/2026:09:01:10 +0000] IP: 192.168.50.25
-  URI (decoded): /login?username=1 UNION SELECT username,password,NULL FROM users--
-  Status: 200 | UA: sqlmap/1.7.8
-  Тип SQLi: union
-  ⚠ ВЕРОЯТНО УСПЕШНЫЙ ЗАПРОС (статус 200, размер 4567 байт)
-```
-
-### Контрольные вопросы
-
-1. Почему запрос с `SLEEP(5)` возвращает HTTP 200, хотя это атака?
-2. Что означает разный размер ответа (3456 vs 4567 байт) в UNION-запросе?
-3. Как настроить WAF-правило, чтобы заблокировать `sqlmap`?
-4. Напишите SPL для Splunk, который сработает на этот инцидент.
-5. Какие IOC нужно добавить в блок-лист?
+- **Apache/Nginx логи** содержат IP, метод, путь, статус и User-Agent — базу для выявления сканирования, брутфорса и инъекций
+- **Windows Event Log** — критические Event ID: 4624, 4625, 4688, 4697, 4720, 4732, 1102
+- **Firewall логи** (iptables, pfSense, ASA) фиксируют попытки подключения на уровне сети
+- **Корреляция** нескольких источников даёт полную картину атаки: сеть → веб → ОС
+- **Splunk SPL** и **ELK Query DSL** — основные инструменты аналитика для поиска аномалий
+- Автоматизация анализа на Python позволяет обрабатывать миллионы строк быстро
 
 ---
 
-## 📚 Итоги
+## 🏠 Домашнее задание
 
-| Тип лога | Ключевые индикаторы | Инструменты |
-|----------|---------------------|-------------|
-| Apache access | Подозрительный UA, SQLi в URI, 4xx/5xx flood | awk, Python, Splunk |
-| Apache error | Path traversal, file not found flood | grep, Splunk |
-| Windows Security | 4625 flood, 4688 suspicious process, 4720 new user | Event Viewer, Splunk |
-| Cisco ASA | 106023 deny flood, 733100 scan detection | Splunk, syslog |
-| iptables | BLOCK flood на множество портов | Python, Splunk |
-| pf | block in flood | syslog, ELK |
+1. Скачайте тестовый access.log с [OWASP Testing Guide samples] и запустите скрипт из раздела 6.4.4. Сколько аномалий найдено?
 
-**Ключевые выводы:**
-- Combined Log Format — стандарт Apache/Nginx, важно уметь его декодировать
-- Windows Event ID 4625, 4688, 4720, 4624 LogonType=10 — обязательны к мониторингу
-- Сканирование портов в firewall-логах: один IP → много уникальных dst_port за короткое время
-- Корреляция нескольких источников логов даёт полную картину атаки
-- Sigma Rules — универсальный формат корреляционных правил, конвертируется в SPL/KQL/Elastic
+2. Настройте Logstash pipeline для сбора Windows Event Log через Winlogbeat в ELK. Создайте alert на EventID 4732.
+
+3. Напишите Splunk-запрос, который обнаруживает атаку "Pass the Hash" (EventID 4624, Logon Type 3, AuthPackage=NTLM, без доменного имени в TargetUserName).
+
+4. Проанализируйте реальные firewall логи: сгенерируйте тестовый трафик через nmap, поймайте его в iptables LOG и напишите скрипт автоматического блокирования IP при > 100 дропах за 5 минут.
+
+5. Создайте в Kibana дашборд с 4 визуализациями: топ-атакующие IP, тренд ошибок аутентификации, карта источников атак, тип протокола.
 
 ---
 
-[← Предыдущая](./chapter-6-3) | [Следующая →](./chapter-6-5)
+## 🔗 Полезные ресурсы
+
+| Ресурс | Ссылка |
+|--------|--------|
+| Apache Log Docs | https://httpd.apache.org/docs/current/logs.html |
+| Windows Event ID Reference | https://www.ultimatewindowssecurity.com/securitylog/encyclopedia/ |
+| Splunk Search Reference | https://docs.splunk.com/Documentation/Splunk/latest/SearchReference |
+| ELK Query DSL | https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl.html |
+| SANS Log Analysis | https://www.sans.org/reading-room/whitepapers/logging/ |
+| python-evtx | https://github.com/williballenthin/python-evtx |
+| Sigma Rules | https://github.com/SigmaHQ/sigma |
+| OWASP Testing Guide | https://owasp.org/www-project-web-security-testing-guide/ |
