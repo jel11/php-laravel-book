@@ -836,7 +836,7 @@ server {
 
 ### 3. HAProxy — корректная конфигурация
 
-```haproxy
+```nginx
 global
     tune.http.maxhdr 150    # Ограничение числа заголовков
 

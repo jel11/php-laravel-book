@@ -49,7 +49,7 @@ YARA умеет:
 
 ### Базовый синтаксис
 
-```yara
+```text
 rule RuleName : tag1 tag2
 {
     meta:
@@ -70,7 +70,7 @@ rule RuleName : tag1 tag2
 
 ### Полная структура с комментариями
 
-```yara
+```text
 // Однострочный комментарий
 
 /*
@@ -126,7 +126,7 @@ rule Mirai_Botnet_Sample
 
 ### 1. Текстовые строки (Text strings)
 
-```yara
+```text
 rule TextStrings_Demo
 {
     strings:
@@ -155,7 +155,7 @@ rule TextStrings_Demo
 
 ### 2. Hex строки (Hex strings)
 
-```yara
+```text
 rule HexStrings_Demo
 {
     strings:
@@ -184,7 +184,7 @@ rule HexStrings_Demo
 
 ### 3. Regular expressions (Regex)
 
-```yara
+```text
 rule RegexStrings_Demo
 {
     strings:
@@ -235,7 +235,7 @@ rule RegexStrings_Demo
 | `xor(n-m)` | text | XOR с диапазоном ключей | `"KEY" xor(1-255)` |
 | `private` | любой | Не включать в вывод совпадений | `$key = "secret" private` |
 
-```yara
+```text
 rule Modifiers_Examples
 {
     strings:
@@ -263,7 +263,7 @@ rule Modifiers_Examples
 
 ### Базовые операторы condition
 
-```yara
+```text
 rule Condition_Examples
 {
     strings:
@@ -306,7 +306,7 @@ rule Condition_Examples
 
 ### Функции для работы с данными файла
 
-```yara
+```text
 rule Functions_Demo
 {
     condition:
@@ -333,7 +333,7 @@ rule Functions_Demo
 
 ### Модуль PE
 
-```yara
+```text
 import "pe"
 
 rule PE_Module_Demo
@@ -383,7 +383,7 @@ rule PE_Module_Demo
 }
 ```
 
-```yara
+```text
 import "pe"
 
 // Реальный пример: детекция packed PE
@@ -408,7 +408,7 @@ rule Packed_PE_Suspicious
 
 ### Модуль ELF
 
-```yara
+```text
 import "elf"
 
 rule ELF_Module_Demo
@@ -430,7 +430,7 @@ rule ELF_Module_Demo
 
 ### Модуль Math
 
-```yara
+```text
 import "math"
 
 rule Math_Module_Demo
@@ -459,7 +459,7 @@ rule Math_Module_Demo
 
 ### Модуль Hash
 
-```yara
+```text
 import "hash"
 
 rule Hash_Module_Demo
@@ -536,7 +536,7 @@ comm -23 malware_strings.txt legit_strings.txt | head -30
 
 **Шаг 3: Написание правила**
 
-```yara
+```text
 // Пример: правило для Cobalt Strike (Beacon)
 rule CobaltStrike_Beacon
 {
@@ -581,7 +581,7 @@ rule CobaltStrike_Beacon
 
 ### Правило для PowerShell-based малвера
 
-```yara
+```text
 rule Malicious_PowerShell_Dropper
 {
     meta:
@@ -631,7 +631,7 @@ rule Malicious_PowerShell_Dropper
 
 ### Правило для Ransomware
 
-```yara
+```text
 import "pe"
 import "math"
 
@@ -689,7 +689,7 @@ rule Generic_Ransomware_Indicators
 
 ### Правило для Keylogger
 
-```yara
+```text
 import "pe"
 
 rule Keylogger_Windows
@@ -1214,7 +1214,7 @@ if __name__ == "__main__":
 
 **Сценарий**: Обнаружен PHP веб-шелл. Напишите YARA-правило для его детекции.
 
-```yara
+```text
 // ЗАДАНИЕ: Дополните это правило
 rule PHP_WebShell_Basic
 {
@@ -1239,7 +1239,7 @@ rule PHP_WebShell_Basic
 
 **Решение:**
 
-```yara
+```text
 rule PHP_WebShell_Detection
 {
     meta:
@@ -1322,7 +1322,7 @@ rule PHP_WebShell_Detection
 ФЛАГ: Описание детектированного вредоносного семейства в meta.description
 ```
 
-```yara
+```text
 // ОТВЕТ НА CTF:
 import "pe"
 import "math"

@@ -491,7 +491,7 @@ BLOODHOUND/SHARPHOUND (AD разведка):
 
 ## YARA правила — примеры
 
-```yara
+```text
 // Детекция LockBit ransomware по строкам
 rule Ransomware_LockBit_Strings {
     meta:

@@ -279,7 +279,7 @@ Display Filters применяются **после** захвата, к уже 
 
 ### Полезные Display Filters
 
-```wireshark
+```text
 # === IP-адреса ===
 ip.addr == 192.168.1.1          # Любой трафик с/на IP
 ip.src == 192.168.1.1           # Только от источника
@@ -484,7 +484,7 @@ log=admin&pwd=SuperSecret123&wp-submit=Log+In&redirect_to=%2Fwp-admin%2F
 
 ### Анализ HTTP-ответов
 
-```wireshark
+```text
 # Найти все редиректы
 http.response.code == 301 || http.response.code == 302
 
@@ -545,7 +545,7 @@ http.cookie
 
 ### Аномалии в DNS-трафике
 
-```wireshark
+```text
 # DNS-запросы с аномально длинными именами (DGA, туннелирование)
 dns.qry.name.len > 50
 
@@ -608,7 +608,7 @@ Client                          Server
 
 ### Анализ TLS в Wireshark
 
-```wireshark
+```text
 # Все TLS-соединения
 tls
 
@@ -685,7 +685,7 @@ ARP Reply:   "192.168.1.1 находится по MAC aa:bb:cc:dd:ee:ff"
 
 ### Признаки ARP Spoofing/Poisoning
 
-```wireshark
+```text
 # Детектор дублирования ARP
 arp.duplicate-address-detected
 

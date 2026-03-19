@@ -270,7 +270,7 @@ Global\{4e4e4e4e-4e4e-4e4e-4e4e-4e4e4e4e4e4e}
 ```
 
 ### YARA правило
-```yara
+```text
 rule LockBit3_HR_Policy_Dropper {
     meta:
         author = "SOC Team Company"

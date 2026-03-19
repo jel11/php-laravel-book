@@ -584,7 +584,7 @@ cat dns.log | zeek-cut ts id.orig_h id.resp_h query | \
 
 ### Zeek-скрипты для обнаружения аномалий
 
-```zeek
+```text
 # /opt/zeek/share/zeek/site/detect_scan.zeek
 # Простой скрипт для обнаружения сканирования портов
 

@@ -208,7 +208,7 @@ CN=Administrator,CN=Users,DC=corp,DC=local           ← пользовател�
 
 LDAP поддерживает фильтрацию объектов. Примеры фильтров:
 
-```ldap
+```text
 # Все пользователи домена
 (objectClass=user)
 

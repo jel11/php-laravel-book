@@ -566,7 +566,7 @@ detection-rules/
 
 **Пример YARA правила:**
 
-```yara
+```text
 /*
    Правило: WebShell_Generic_PHP
    Автор: Ivan Petrov
@@ -802,7 +802,7 @@ VT_API_KEY=abc123def456
 SHODAN_KEY=xyz789
 ```
 
-```gitignore
+```text
 # .gitignore — обязателен в каждом репозитории
 .env
 *.key

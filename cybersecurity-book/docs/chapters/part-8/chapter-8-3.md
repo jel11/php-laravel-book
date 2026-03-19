@@ -367,7 +367,7 @@ content:"UNION SELECT"; fast_pattern; nocase;
 
 ### 1. Детекция SQL Injection
 
-```suricata
+```text
 # Базовое правило — UNION SELECT
 alert http $EXTERNAL_NET any -> $HTTP_SERVERS $HTTP_PORTS \
     (msg:"ET WEB_SERVER SQL Injection UNION SELECT"; \
@@ -406,7 +406,7 @@ alert http $EXTERNAL_NET any -> $HTTP_SERVERS $HTTP_PORTS \
 
 ### 2. Детекция XSS
 
-```suricata
+```text
 # Базовый XSS: тег <script>
 alert http $EXTERNAL_NET any -> $HTTP_SERVERS $HTTP_PORTS \
     (msg:"ET WEB_SERVER XSS Attempt script tag"; \
@@ -445,7 +445,7 @@ alert http $HTTP_SERVERS $HTTP_PORTS -> $EXTERNAL_NET any \
 
 ### 3. Детекция сканирования портов
 
-```suricata
+```text
 # Nmap SYN scan (порты без ACK)
 # Примечание: детекция сканирования лучше делается через threshold
 alert tcp $EXTERNAL_NET any -> $HOME_NET any \
@@ -495,7 +495,7 @@ alert tcp $EXTERNAL_NET any -> $HOME_NET any \
 
 ### 4. Детекция брутфорса SSH
 
-```suricata
+```text
 # Множество попыток подключения к SSH
 alert tcp $EXTERNAL_NET any -> $SSH_SERVERS $SSH_PORTS \
     (msg:"ET SCAN SSH Brute Force Attempt"; \
@@ -532,7 +532,7 @@ alert tcp $EXTERNAL_NET any -> $HOME_NET $SSH_PORTS \
 
 ### 5. Детекция DNS Tunneling
 
-```suricata
+```text
 # Аномально длинные DNS-запросы
 alert dns $HOME_NET any -> any any \
     (msg:"ET DNS Suspiciously Long DNS Query (possible tunneling)"; \
@@ -576,7 +576,7 @@ alert dns any any -> $HOME_NET any \
 
 ### 6. Детекция Beaconing C2
 
-```suricata
+```text
 # HTTP beaconing по User-Agent (Go HTTP client — часто используется малварью)
 alert http $HOME_NET any -> $EXTERNAL_NET any \
     (msg:"ET MALWARE Go HTTP Client (Possible C2 Beacon)"; \
@@ -862,7 +862,7 @@ sudo suricata --af-packet=eth0:eth1
 
 ### Сравнение правил action для IDS и IPS
 
-```suricata
+```text
 # В IDS режиме: alert = log; drop = log (не блокирует)
 # В IPS режиме: alert = log; drop = log + блокировка
 
@@ -957,7 +957,7 @@ cat /var/log/suricata/eve.json | \
 
 **Задание:** Написать правила для детекции следующих атак.
 
-```suricata
+```text
 # Правило 1: Path Traversal в URL
 alert http $EXTERNAL_NET any -> $HTTP_SERVERS $HTTP_PORTS \
     (msg:"CUSTOM Path Traversal Attack Detected"; \
